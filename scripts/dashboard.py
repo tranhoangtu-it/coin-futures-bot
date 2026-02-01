@@ -68,28 +68,81 @@ while True:
         active = data.get("active", False)
         
         # Header Section
-        st.title("🦅 PET Command Center")
+        st.title("🦅 PET Command Center ($100 ➔ $1M)")
         
-        # 1. Goal Tracker
-        col_g1, col_g2 = st.columns([3, 1])
+        # 1. Goal Tracker & Win Rate
+        col_g1, col_g2, col_g3 = st.columns([2, 1, 1])
         with col_g1:
-            progress = min(bal / GOAL, 1.0)
+            # Clamp progress to [0.0, 1.0] to prevent crash if balance < 0
+            progress = max(0.0, min(bal / GOAL, 1.0))
             st.progress(progress)
-            st.caption(f"Goal Progress: ${bal:.2f} / ${GOAL:,.0f}")
+            st.caption(f"Goal: ${bal:.2f} / ${GOAL:,.0f} ({progress*100:.4f}%)")
         with col_g2:
             status_icon = "🟢 ONLINE" if active else "🔴 OFFLINE"
             st.markdown(f"### {status_icon}")
+        with col_g3:
+             # Calculate Win Rate (Only Closed Trades)
+             trades = data.get("recent_trades", [])
+             # Filter only trades that have a PnL record (Closed)
+             closed_trades = [t for t in trades if "pnl" in t]
+             
+             wins = [t for t in closed_trades if t["pnl"] > 0]
+             losses = [t for t in closed_trades if t["pnl"] <= 0]
+             total = len(closed_trades)
+             
+             wr = (len(wins) / total * 100) if total > 0 else 0.0
+             st.metric("Win Rate", f"{wr:.1f}%", f"{len(wins)}W / {len(losses)}L")
 
         # 2. Key Metrics
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("Equity", f"${bal:,.2f}", f"{pnl:+.2f} ({pnl_pct:+.2f}%)")
         k2.metric("Active Positions", count_pos, delta_color="normal")
-        k3.metric("Scan Speed", "High (Dual-Layer)")
-        k4.metric("Strategy", "Micro-Scalp + Swing")
+        k3.metric("Scan Speed", "Dual-Layer (Fast/Slow)")
+        k4.metric("Risk Mode", "Kelly Lite (Dynamic Size)")
+
+        st.divider()
+        
+        # 3. Analytics Charts
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("Equity Curve")
+            # Mock equity curve from trade history if real history not available
+            # In a real app, we'd persist the equity curve series
+            if trades:
+                df_t = pd.DataFrame(trades)
+                # Filter only CLOSED trades (those with PnL)
+                if "pnl" in df_t.columns:
+                     df_closed = df_t.dropna(subset=["pnl"]).sort_values("timestamp")
+                     if not df_closed.empty:
+                         # Cumulative PnL + Start Balance
+                         df_closed["equity"] = df_closed["pnl"].cumsum() + start_bal
+                         st.line_chart(df_closed["equity"], use_container_width=True)
+                     else:
+                         st.info("Waiting for first closed trade...")
+                else:
+                    st.info("Trades logged, but no PnL data yet.")
+            else:
+                st.info("No trades to plot equity curve yet.")
+                
+        with c2:
+            st.subheader("PnL Distribution")
+            if trades:
+                # Use strict PnL filtering from before
+                df_t2 = pd.DataFrame(trades)
+                if "pnl" in df_t2.columns:
+                     df_closed_2 = df_t2.dropna(subset=["pnl"])
+                     if not df_closed_2.empty:
+                         st.bar_chart(df_closed_2["pnl"], use_container_width=True)
+                     else:
+                         st.info("No PnL data to chart.")
+                else:
+                     st.info("No PnL data available.")
+            else:
+                 st.info("No closed trades yet.")
 
         st.divider()
 
-        # 3. "Multi-Screen" Monitor Grid
+        # 4. "Multi-Screen" Monitor Grid
         if not positions:
             st.info("🔭 Scanning Markets... No active trades yet.")
         else:

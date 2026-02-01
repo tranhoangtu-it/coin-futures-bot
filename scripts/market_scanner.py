@@ -28,6 +28,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import numpy as np
 import pandas as pd
 import aiohttp
+from loguru import logger
+from xgboost import XGBClassifier
+
+from src.features.technical_indicators import TechnicalIndicators
+from src.risk.kelly_criterion import KellyCriterion
+from src.risk.trailing_stop import TrailingStopManager, PositionSide
 import torch
 from loguru import logger
 from dotenv import load_dotenv
@@ -68,9 +74,16 @@ class MLScanner:
         
         # Dashboard Data
         self.recent_trades = []
-        self.sym_logs = {} # Map symbol -> latest log message
-        self.start_balance = 0.0
+        self.sym_logs = {} 
+        self.start_balance = 0.0 # Will be set on init
         self.session_start = time.time()
+        
+        # Risk Management (Production Integration)
+        self.kelly = KellyCriterion(fractional_factor=0.3, max_position_pct=0.2)
+        self.stops_mgr = TrailingStopManager(atr_multiplier=2.0)
+        
+        # We need to feed recent trades to Kelly to establish a baseline
+        # (Ideally this loads from DB, but for now we start fresh or from state)
 
     def save_state(self):
         """Save live state for dashboard."""
@@ -86,11 +99,11 @@ class MLScanner:
 
             state = {
                 "timestamp": time.time(),
-                "balance": float(self.balance) if hasattr(self, 'balance') else 0.0,
-                "start_balance": self.start_balance,
+                "balance": self.virtual_balance, # Show Virtual Balance
+                "start_balance": 100.0,
                 "positions": self.positions,
-                "recent_trades": self.recent_trades[-50:], # Last 50 trades
-                "logs": self.sym_logs, # Latest log per symbol
+                "recent_trades": self.recent_trades[-50:], 
+                "logs": self.sym_logs, 
                 "active": True
             }
             
@@ -143,6 +156,14 @@ class MLScanner:
                             "precision": int(round(-math.log(step, 10), 0))
                         }
                         count += 1
+            
+            # Boost API Concurrency for "Global Scan"
+            self.sem = asyncio.Semaphore(100) 
+            
+            # Virtual Account Reset ($100 Start)
+            self.virtual_balance = 100.0 
+            self.start_balance = 100.0
+            
             logger.info(f"🔍 Loaded precision for {count} pairs")
             return True
         except Exception as e:
@@ -225,15 +246,15 @@ class MLScanner:
             probs = self.model.predict_proba(seq, current_features)[0]
             p_sell, p_hold, p_buy = float(probs[0]), float(probs[1]), float(probs[2])
             
-            # Relative Scoring (Force Action)
+            # Relative Scoring (Balanced for Win Rate)
             sum_active = p_buy + p_sell
             ml_signal = 0
             
-            # Lower threshold to 1% to catch faint signals if model is strictly holding
-            if sum_active > 0.01: 
+            # Threshold: 3% minimum active probability (Avoid noise)
+            if sum_active > 0.03: 
                 relative_buy = p_buy / sum_active
-                if relative_buy > 0.60: ml_signal = 1
-                elif relative_buy < 0.40: ml_signal = -1
+                if relative_buy > 0.70: ml_signal = 1   # High conviction BUY
+                elif relative_buy < 0.30: ml_signal = -1 # High conviction SELL
             
             # 4. HYBRID FILTERS ("Combine Everything")
             # Extract latest indicators
@@ -247,8 +268,8 @@ class MLScanner:
             
             if ml_signal != 0:
                 # Filter 1: Trend Strength (ADX)
-                # Lowered to 15 to catch early moves
-                if adx > 15: 
+                # Stronger Trend Requirement > 20
+                if adx > 20: 
                     
                     # Filter 2: RSI Validation (Don't buy tops, Don't sell bottoms)
                     if ml_signal == 1: # BUY
@@ -296,8 +317,10 @@ class MLScanner:
             signal, atr = self.analyze(symbol, df)
             
             if signal != 0:
-                avail_bal = await self.get_available_balance()
-                if avail_bal < 50: return 
+                # VIRTUAL BALANCE LOGIC
+                # "Mặc kệ ví có bao nhiêu" -> Ignore real wallet, trade as if we only have $100
+                avail_bal = self.virtual_balance 
+                if avail_bal < 10: return # Hard floor $10
                 
                 current_price = df["close"].iloc[-1]
                 if current_price == 0: return
@@ -317,21 +340,53 @@ class MLScanner:
                     "12h": 2,   # Trend
                     "1d": 2     # Macro
                 }
-                leverage = leverage_map.get(interval, 5)
+                # Kelly Criterion Sizing (Virtual Wallet)
+                # We need to estimate Win Prob. The model gives us probabilities.
+                probs = self.model.predict_proba(seq, current_features)[0]
+                p_buy = float(probs[2])
+                p_sell = float(probs[0])
+                win_prob = p_buy if side == "BUY" else p_sell
                 
-                qty = risk_amt / stop_dist
-                max_qty = (avail_bal * 0.10 * leverage) / current_price
-                qty = min(qty, max_qty)
+                # Mock average win/loss ratio (Reward/Risk) if no history
+                # We target 2:1 RR
+                avg_win = 0.02 # 2% target
+                avg_loss = 0.01 # 1% stop
                 
-                if qty * current_price < 10: 
-                    qty = 11 / current_price 
+                # If we have trade history, refine this
+                if len(self.recent_trades) > 10:
+                    df_t = pd.DataFrame(self.recent_trades)
+                    if "pnl" in df_t.columns:
+                        wins = df_t[df_t["pnl"] > 0]["pnl"].mean()
+                        losses = abs(df_t[df_t["pnl"] <= 0]["pnl"].mean())
+                        if not np.isnan(wins) and not np.isnan(losses) and losses > 0:
+                            avg_win = wins
+                            avg_loss = losses
+                
+                # Calculate Kelly Fraction
+                kelly_frac = self.kelly.calculate(win_prob, avg_win, avg_loss)
+                
+                # Get Size based on VIRTUAL Balance
+                qty = self.kelly.get_position_size_with_leverage(
+                    account_balance=self.virtual_balance,
+                    entry_price=current_price,
+                    leverage=leverage,
+                    kelly_fraction=kelly_frac
+                )
+                
+                # Fallback / Min Limit
+                if qty * current_price < 10:
+                     # If Kelly says 0 or too small, but signal is strong... 
+                     # we respect Kelly and SKIP, unless it's just a "startup" issue.
+                     # For now, force min size if signal is very strong (>80%)
+                     if win_prob > 0.8:
+                         qty = 11 / current_price
+                     else:
+                         return
                 
                 qty = self.round_qty(symbol, qty)
                 if qty <= 0: return
 
-                side = "BUY" if signal == 1 else "SELL"
-                
-                logger.info(f"🧠 ML Signal {symbol} [{interval}]: {side} (ATR={atr:.4f}, Lev={leverage}x)")
+                logger.info(f"🧠 ML Signal {symbol} [{interval}]: {side} (Kelly={kelly_frac:.2f}, Lev={leverage}x)")
                 
                 await self.execute_trade(symbol, side, qty, current_price, atr, leverage)
 
@@ -354,13 +409,18 @@ class MLScanner:
                 tp_price = fill_price + tp_dist if side == "BUY" else fill_price - tp_dist
                 sl_price = fill_price - sl_dist if side == "BUY" else fill_price + sl_dist
                 
+                # Register with Trailing Stop Manager
+                pos_side = PositionSide.LONG if side == "BUY" else PositionSide.SHORT
+                stop_level = self.stops_mgr.create_stop(symbol, pos_side, fill_price, atr)
+                sl_price = stop_level.current_stop # Use the manager's calculated stop
+                
                 self.positions[symbol] = {
                     "side": side,
                     "entry": fill_price,
                     "qty": qty,
                     "tp": tp_price,
                     "sl": sl_price,
-                    "leverage": leverage # Store leverage for PnL calc
+                    "leverage": leverage 
                 }
                 
                 # Dashboard Log
@@ -374,7 +434,7 @@ class MLScanner:
                 })
                 self.save_state()
                 
-                logger.info(f"🤖 ML ENTRY {side} {symbol} @ {fill_price} [Lev {leverage}x]")
+                logger.info(f"🤖 ML ENTRY {side} {symbol} @ {fill_price} [Lev {leverage}x] | Stop: {sl_price:.4f}")
             return True
         except Exception as e:
             logger.error(f"Trade failed {symbol}: {e}")
@@ -413,35 +473,30 @@ class MLScanner:
                 # or carry it. For now, let's infer 'stop_dist' from Entry/SL
                 stop_dist = abs(entry - sl)
                 
+                # 1. Check PnL (TP/SL) & Trailing Stop
                 if pos["side"] == "BUY":
                     pnl = (curr - entry) / entry * 100 * lev
-                    
-                    # Trailing Stop Logic
-                    # If price moves up by 1x StopDist, move SL to Entry (Break Even)
-                    # If price moves up by 2x StopDist, move SL to Entry + 0.5x StopDist (Lock Profit)
-                    new_sl = sl
-                    if curr > entry + stop_dist:
-                        possible_sl = entry + (curr - entry) - stop_dist # Trail by 1x ATR distance
-                        if possible_sl > sl: 
-                            new_sl = possible_sl
-                            logger.info(f"🪜 Trailing SL {symbol} moved UP to {new_sl:.4f}")
-                            self.positions[symbol]["sl"] = new_sl
-                            
-                    if curr >= pos["tp"] or curr <= new_sl: close_signal = True
-                    
-                else: # SELL
+                else: 
                     pnl = (entry - curr) / entry * 100 * lev
-                    
-                    # Trailing Stop Logic (Down)
-                    new_sl = sl
-                    if curr < entry - stop_dist:
-                         possible_sl = entry - (entry - curr) + stop_dist # Trail by 1x ATR
-                         if possible_sl < sl:
-                             new_sl = possible_sl
-                             logger.info(f"🪜 Trailing SL {symbol} moved DOWN to {new_sl:.4f}")
-                             self.positions[symbol]["sl"] = new_sl
+                
+                # Update Trailing Stop Manager (Handles all "High Water Mark" logic)
+                self.stops_mgr.update_stop(symbol, curr)
+                
+                # Check if Stop Hit
+                if self.stops_mgr.is_stopped(symbol, curr):
+                    logger.info(f"🛑 Trailing Stop hit for {symbol} at {curr}")
+                    close_signal = True
+                
+                # Update SL visual on dashboard
+                current_stop = self.stops_mgr.get_stop_price(symbol)
+                if current_stop: 
+                    self.positions[symbol]["sl"] = current_stop
 
-                    if curr <= pos["tp"] or curr >= new_sl: close_signal = True
+                # Check TP (Hard TP is still valid as specific target)
+                if (pos["side"] == "BUY" and curr >= pos["tp"]) or \
+                   (pos["side"] == "SELL" and curr <= pos["tp"]):
+                       logger.info(f"🎯 Take Profit hit for {symbol} at {curr}")
+                       close_signal = True
                 
                 # 2. AI Re-evaluation (Signal Flip)
                 if not close_signal:
@@ -459,8 +514,37 @@ class MLScanner:
                     await self._req("POST", "/fapi/v1/order",
                         params={"symbol": symbol, "side": side, "type": "MARKET", "quantity": pos["qty"]},
                         signed=True)
-                    icon = "✅" if pnl > 0 else "🛑"
-                    logger.info(f"{icon} CLOSE {symbol} | PnL: {pnl:.2f}%")
+                    
+                    # Virtual PnL Calculation
+                    # Profit = (Exit - Entry) * Qty if Long, (Entry - Exit) * Qty if Short
+                    curr_price_float = float(klines.iloc[-1]["close"])
+                    entry_price = float(pos["entry"])
+                    qty_float = float(pos["qty"])
+                    
+                    if pos["side"] == "BUY":
+                        profit = (curr_price_float - entry_price) * qty_float
+                    else:
+                        profit = (entry_price - curr_price_float) * qty_float
+                        
+                    self.virtual_balance += profit
+                    
+                    # Log Close Event for Dashboard
+                    self.recent_trades.append({
+                        "timestamp": time.time(),
+                        "symbol": symbol,
+                        "side": "CLOSE", 
+                        "pnl": profit, 
+                        "price": curr_price_float,
+                        "qty": qty_float,
+                        "leverage": pos["leverage"]
+                    })
+                    
+                    icon = "✅" if profit > 0 else "🛑"
+                    logger.info(f"{icon} CLOSE {symbol} | PnL: ${profit:.2f} ({(pnl):.2f}%) | V.Bal: ${self.virtual_balance:.2f}")
+                    
+                    # Cleanup Stop Manager
+                    self.stops_mgr.close_position(symbol)
+                    
                     if symbol in self.positions:
                         del self.positions[symbol]
                         

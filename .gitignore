@@ -1,152 +1,42 @@
-# ==================================================
 # Python
-# ==================================================
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
 
-# ==================================================
 # Virtual Environment
-# ==================================================
 venv/
 .venv/
 env/
 ENV/
-.conda/
-.pyenv/
 
-# ==================================================
-# Environment Variables (Secrets) - CRITICAL
-# ==================================================
+# Environment Variables (Secrets)
 .env
-.env.local
-.env.*.local
-*.key
-*.pem
 
-# ==================================================
-# IDEs & Editors
-# ==================================================
+# IDEs
 .vscode/
 .idea/
 *.swp
-*.swo
-*~
-.DS_Store
-Thumbs.db
 
-# ==================================================
-# ML Models & Artifacts
-# ==================================================
+# ML / Data
 models/
 mlruns/
+data/
 *.h5
 *.pkl
 *.pt
 *.pth
 *.onnx
-*.safetensors
-*.joblib
 
-# Except example models (if any)
-!models/.gitkeep
-
-# ==================================================
-# Data & Cache
-# ==================================================
-data/
-*.csv
-*.parquet
-*.feather
-*.arrow
-.cache/
-cache/
-
-# Except example data structure
-!data/.gitkeep
-
-# ==================================================
-# Database Files
-# ==================================================
-*.db
-*.sqlite
-*.sqlite3
-mlflow.db
-questdb-data/
-
-# ==================================================
 # Logs
-# ==================================================
 logs/
 *.log
-*.log.*
 
-# ==================================================
 # Distribution / Build
-# ==================================================
 build/
 dist/
 *.egg-info/
-.eggs/
-*.whl
 
-# ==================================================
-# Testing & Coverage
-# ==================================================
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-.mypy_cache/
-.ruff_cache/
-.hypothesis/
-
-# ==================================================
-# Jupyter Notebooks
-# ==================================================
-.ipynb_checkpoints/
-*.ipynb
-
-# Except documentation notebooks
-!docs/**/*.ipynb
-
-# ==================================================
-# Project Specific - Results & Temporary Files
-# ==================================================
+# Project Specific
 backtest_results.txt
 scalper_results.txt
 backtest_improved.txt
-*_results.txt
-*_output.txt
-
-# Live trading state (contains positions/orders)
-data/live_state.json
-
-# ==================================================
-# Docker
-# ==================================================
-docker-compose.override.yml
-.dockerignore
-
-# ==================================================
-# OS Generated Files
-# ==================================================
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-desktop.ini
-
-# ==================================================
-# Temporary Files
-# ==================================================
-*.tmp
-*.temp
-*.swp
-*.bak
-*.backup
-*~
