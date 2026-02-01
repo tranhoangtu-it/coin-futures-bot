@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tradingbot"
+version = "0.1.0"
+description = "High-performance automated trading system for Binance Futures"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [
+    {name = "TradingBot Team"}
+]
+keywords = ["trading", "binance", "futures", "algorithmic-trading", "machine-learning"]
+
+dependencies = [
+    # Core async and networking
+    "aiohttp>=3.9.0",
+    "websockets>=12.0",
+    "python-binance>=1.0.19",
+    
+    # Data processing
+    "numpy>=1.26.0",
+    "pandas>=2.1.0",
+    "polars>=0.20.0",
+    
+    # Database
+    "questdb>=1.1.0",
+    
+    # Machine Learning
+    "scikit-learn>=1.4.0",
+    "xgboost>=2.0.0",
+    "torch>=2.1.0",
+    
+    # Technical Analysis
+    "pandas-ta>=0.3.14b",
+    "statsmodels>=0.14.0",
+    
+    # Sentiment Analysis
+    "vaderSentiment>=3.3.2",
+    "aiohttp>=3.9.0",
+    
+    # MLOps
+    "mlflow>=2.10.0",
+    
+    # Utilities
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "loguru>=0.7.2",
+    "orjson>=3.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "mypy>=1.8.0",
+    "ruff>=0.1.0",
+    "pre-commit>=3.6.0",
+]
+
+[project.scripts]
+tradingbot = "src.main:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "ANN", "B", "C4", "SIM"]
+ignore = ["ANN101", "ANN102"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
